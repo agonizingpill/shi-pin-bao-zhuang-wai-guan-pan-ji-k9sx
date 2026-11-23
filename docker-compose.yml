@@ -1,0 +1,83 @@
+name: packaging-appearance
+x-python: &python
+  image: packaging-appearance-python:local
+  build: ./backend
+  environment:
+    PGHOST: db
+    PGDATABASE: packaging
+    PGUSER: packaging
+    PGPASSWORD: ${POSTGRES_PASSWORD:-demo-packaging-db}
+    REDIS_URL: redis://redis:6379/0
+    JWT_SECRET: ${JWT_SECRET:-local-packaging-workstation-key-change-before-sharing}
+    SEED_DEMO: ${SEED_DEMO:-true}
+    OPENBLAS_NUM_THREADS: '1'
+    OMP_NUM_THREADS: '1'
+  depends_on:
+    db: { condition: service_healthy }
+    redis: { condition: service_healthy }
+  volumes:
+    - model_evidence:/model-evidence
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-packaging-appearance}-db
+    environment:
+      POSTGRES_USER: packaging
+      POSTGRES_DB: packaging
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-demo-packaging-db}
+    ports:
+      - '127.0.0.1:${DB_PORT:-17764}:5432'
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U packaging -d packaging']
+      interval: 2s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-packaging-appearance}-redis
+    command: [redis-server, --appendonly, 'yes']
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+  backend:
+    <<: *python
+    container_name: ${COMPOSE_PROJECT_NAME:-packaging-appearance}-backend
+    command: [sh, -c, 'python -m src.bootstrap && exec uvicorn src.api:app --host 0.0.0.0 --port 8000']
+    ports:
+      - '127.0.0.1:${BACKEND_PORT:-19264}:8000'
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+  worker:
+    <<: *python
+    container_name: ${COMPOSE_PROJECT_NAME:-packaging-appearance}-worker
+    command: [python, -m, src.worker]
+    healthcheck:
+      test: [CMD, python, -c, "import time,os; assert time.time()-os.stat('/tmp/pack-worker').st_mtime<12"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  frontend:
+    build: ./frontend
+    container_name: ${COMPOSE_PROJECT_NAME:-packaging-appearance}-frontend
+    depends_on:
+      backend: { condition: service_healthy }
+    ports:
+      - '127.0.0.1:${FRONTEND_PORT:-18264}:80'
+    healthcheck:
+      test: [CMD-SHELL, 'wget -qO /dev/null http://127.0.0.1/api/health']
+      interval: 3s
+      timeout: 5s
+      retries: 20
+volumes:
+  pg_data:
+  redis_data:
+  model_evidence:

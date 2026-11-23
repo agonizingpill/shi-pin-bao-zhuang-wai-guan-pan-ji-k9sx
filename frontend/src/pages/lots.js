@@ -1,0 +1,18 @@
+import {GRADES, MACHINES, STATES} from '../labels.js';
+import {empty, heading, lotLink, number, options, safe, sectionTitle, status, time} from '../ui.js';
+
+const metrics = [
+  ['待采样', ['new']], ['异常待补采', ['blocked']], ['待判级与签核', ['measured','queued','review']], ['返工中', ['rework']],
+];
+
+export function lotsPage(lots, materials, account, filter) {
+  const rows = lots.filter(lot => (!filter.state || lot.state === filter.state) && (!filter.search || `${lot.code} ${lot.product} ${lot.machine}`.toLowerCase().includes(filter.search.toLowerCase())));
+  return `${heading('包装线 / 批次台账', '包装批次', '让每个批次的采样、判级与返工都有交接记录。', account.role === 'operator' ? '<button class="primary" data-dialog="register">＋ 登记批次</button>' : '')}
+    <section class="ledger-summary" aria-label="工序概况"><div class="summary-head"><b>当班工序</b><small>WORKCELL</small></div>${metrics.map(([label, group])=> `<div><span>${label}</span><strong>${String(lots.filter(lot=>group.includes(lot.state)).length).padStart(2,'0')}</strong></div>`).join('')}</section>
+    <div class="lot-grid"><section class="panel ledger">${sectionTitle('批次台账', `${rows.length} / ${lots.length} 批`)}
+      <form id="lot-filter" class="filter"><label>查找批次<input name="search" placeholder="批号 / 产品 / 机台" value="${safe(filter.search)}"></label><label>工序<select name="state"><option value="">全部工序</option>${options(Object.fromEntries(Object.entries(STATES).filter(([key])=>['new','blocked','measured','queued','review','rework','approved','closed'].includes(key))), filter.state)}</select></label><button>筛选</button></form>
+      ${rows.length ? `<div class="scroll-x"><table><thead><tr><th>包装批次 / 产品</th><th>机台</th><th>数量</th><th>工序</th><th>签核等级</th><th></th></tr></thead><tbody>${rows.map(lot => `<tr><td><b class="mono">${safe(lot.code)}</b><small>${safe(lot.product)}</small></td><td class="mono">${safe(lot.machine)}</td><td class="mono">${number(lot.units)}</td><td>${status(lot.state)}</td><td>${lot.final_grade ? `<b class="grade-inline" title="${GRADES[lot.final_grade]}">${lot.final_grade}</b>` : '—'}</td><td><a data-nav href="${lotLink(lot.state === 'rework' ? 'rework' : 'workbench', lot.id)}" aria-label="打开 ${safe(lot.code)}">查看 →</a></td></tr>`).join('')}</tbody></table></div>` : empty('没有匹配的批次','调整筛选条件，或登记一张新的包装批次。')}
+      <footer class="table-footer">数量单位为件 · 批次最新登记 ${time(lots[0]?.created_at)}</footer></section>
+      <aside class="panel stock">${sectionTitle('膜材料位', '领料实时库存')}${materials.map(material => `<article><span class="film-swatch ${safe(material.sku.slice(5,7))}"></span><div><b>${safe(material.description)}</b><small>${safe(material.sku)} · ${safe(material.bin)}</small></div><strong class="mono">${number(material.on_hand)}</strong></article>`).join('')}<p>工序走到「待领料」时，线边操作员可确认对应膜材出库。</p></aside></div>
+    ${account.role === 'operator' ? `<dialog id="register"><div class="dialog-heading"><h2>登记包装批次</h2><button data-dismiss="register" aria-label="关闭">×</button></div><form data-action="register" class="fields"><label>批号<input name="code" required placeholder="PK-261121-06" maxlength="64"></label><label>包装产品<input name="product" required placeholder="例如 海盐燕麦脆片 120 g" maxlength="120"></label><label>绑定视觉机台<select name="machine">${options(Object.fromEntries(MACHINES.map(machine=>[machine,machine])))}</select></label><label>批次件数<input type="number" name="units" min="1" max="2000000" required></label><label class="full">膜材 SKU<select name="film_sku">${options(Object.fromEntries(materials.map(item=>[item.sku,`${item.sku} · ${item.description}`])))}</select></label><button class="primary full">登记并打开工作台</button></form></dialog>` : ''}`;
+}
