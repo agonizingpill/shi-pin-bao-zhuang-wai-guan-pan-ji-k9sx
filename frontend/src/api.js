@@ -41,4 +41,10 @@ export const api = {
   detail: id => request(`/lots/${id}`),
   register: payload => request('/lots', payload, 'POST'),
   action: (id, endpoint, payload) => request(`/lots/${id}/${endpoint}`, payload, 'POST'),
+  calibrations: () => request('/calibrations'),
+  calibration: id => request(`/calibrations/${id}`),
+  registerCalibration: payload => request('/calibrations', payload, 'POST'),
+  amendCalibration: (id, payload) => request(`/calibrations/${id}/amend`, payload, 'POST'),
+  retryCalibration: id => request(`/calibrations/${id}/retry`, null, 'POST'),
+  clearCalibrationTask: (id, taskId, payload) => request(`/calibrations/${id}/tasks/${taskId}/clear`, payload, 'POST'),
 };

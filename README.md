@@ -25,7 +25,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 | 账号 | 岗位 | 使用页面和权限 |
 |---|---|---|
 | `operator` | 线边操作员 | 登记批次、归档同机台样本、标记缺陷、提交判级、按返工单领料 |
-| `supervisor` | 质检主管 | 查询批次、确认或驳回缺陷、签核等级、登记返工复测、关闭批次 |
+| `supervisor` | 质检主管 | 查询批次、确认或驳回缺陷、签核等级、登记返工复测、关闭批次、登记机台校准勘误 |
 | `viewer` | 排产查看 | 查询批次、样本与模型凭证、返工和交接履历 |
 
 ## 一班交接剧本
@@ -40,8 +40,11 @@ docker compose exec -T backend python -m scripts.seed_demo
 | 09:20 | `PK-261121-04-S01` 黑芝麻薄脆模型为 A。主管根据实物封口折边改判 B，记录理由，自动签出 160 件 `FILM-GL-180` 返工需求。 |
 | 09:28 | 操作员在 A-12 对 `PK-261121-04` 确认领料。初始 360 件扣至 200 件，重复确认会被拦截。 |
 | 10:05 | 主管在 `PK-261121-04-R01` 登记同机台五通道复测，替换件数填写 160。举例可填褶皱 0.32%、偏位 0.19 mm、色差 0.83 ΔE、间隙 0.14 mm、光泽波动 1.9%。复测签核后关闭并交接排产。 |
+| 10:20 | `VS-01` 复校发现校准偏差。主管在「机台校准」登记受影响时段与褶皱、色差、光泽修正量；系统按采样时间圈定 `PK-261121-01`，重算低于原判，已关批批次挂追查；更正修正量后以新结果为准。 |
 
 五个初始批次对应这份剧本。启动时保留一张待采批次、一张缺通道批次、一张待签核批次、一张改判待领料批次和一张已关闭批次。表中时间为模拟班次的操作顺序，界面显示实际归档与签核时间（Asia/Shanghai）。
+
+种子还会登记一张 `VS-01` 演示勘误，覆盖 `PK-261121-01` 的采样时段：重算等级低于原判，已关批批次因此挂上追查待办。可在「机台校准」页查看对照与处置进度。
 
 ## 状态与数据规则
 
@@ -50,27 +53,45 @@ docker compose exec -T backend python -m scripts.seed_demo
 - A 同判可以直接进入待关闭。任何改判和任何非 A 级签核都要求记录原因和有效返工件数，在签核事务里生成一张领料单。保留模型原判、人工终判和签核人。
 - 返工单按 `requested → issued → verified` 推进。领料扣减对应 SKU，库存不足保持待领料。换膜件数必须等于领料件数，且用绑定机台登记五通道复测。外观复测上限分别为褶皱 1%、偏位 0.5 mm、色差 2 ΔE、封口间隙 0.35 mm、光泽波动 4%。失败记录进入履历，批次继续等待复测。
 
+## 机台校准勘误
+
+主管在「机台校准」页登记机台、受影响时段和各通道修正量，系统随即：
+
+- 按**签核样本的采样时间**（`visual_measure.created_at`，不用签核时间）落在时段内且机台一致的条件圈定已签批次，冻结原读数、原模型等级与人工签核快照。
+- 用**原模型**对「原读数 + 修正量」重算，结果只写入勘误结果表，不回写测量与判级记录，因此原读数、原模型等级和签核始终可查。
+- 重算等级**低于**原判时派发处置待办：未关批的挂「关批拦截」，已关批的挂「追查」；等待领料或复测的返工批次同样先拦关批。
+- 勘误与关批并发时，受理与关批共用机台级事务锁，**先受理的勘误**未算完即暂缓关批，受理晚于关批则按已关批挂追查。
+- 勘误更正修正量后以新结果为准覆盖旧结果；不再成立的待办自动撤销，仍成立的保留。重试同一勘误按 (勘误, 批次, 类型) 幂等，不会重复挂待办或重复记履历。
+- 重算出错（修正后读数越界等）标为异常且不撤销既有待办，可更正或重试；异常未消除前同样暂缓关批。
+- 工作台逐批对照原模型等级、重算等级与处置进度，主管签核待办附处置说明。
+
+勘误受理、更正、重试与待办签核都写入 `calibration_event`，批次侧同时记入 `audit_event`。
+
 ## 模型与执行
 
 `backend/src/model.py` 使用固定种子 `1065` 从三种等级的合成参考分布生成 216 条训练记录和 72 条独立留出记录。训练集拟合 `StandardScaler`，将五通道按训练均值与标准差变换为 `z = (x - μ) / σ`。PCA 用完整 SVD 保留 3 维，`LinearSVC(C=0.75, dual=False)` 输出 A/B/C 三个一对其余类别的线性间隔分数。模型保存各类分数、主成分坐标、方差贡献、留出指标、参数、输入摘要和参考样本校验和。训练和留出数据为演示用合成数据，复测阈值为本演示工位外观规则。
 
 判级请求先原子写入 PostgreSQL 持久队列，再向 Redis 发通知。Worker 消费通知并轮询队列，通过数据库批次锁保证单次落库。结果和失败原因回到批次详情，成功凭证同时写入共享卷 `/model-evidence`。容器重启发生在提交前时，数据库事务回滚，待判级记录仍可消费。
 
+校准勘误复用同一 Worker：受理、更正和重试都原子写入 `calibration.state='accepted'` 后再通知 `pouch:calibration-wake`。Worker 交替消费判级与勘误队列，勘误以事务级咨询锁保证单次重算，重算凭证写到 `/model-evidence/calibration-<勘误>-lot-<批次>.json`。Redis 通知丢失时仍由轮询兜底。
+
 ## 目录与配置
 
 | 位置 | 职责 |
 |---|---|
 | `backend/migrations/001_workcell.sql` | 批次、测量版本、缺陷、判级、领料单、库存和履历的 SQL 结构与约束 |
+| `backend/migrations/002_calibration.sql` | 机台校准勘误、圈定快照、重算结果、处置待办与勘误履历 |
 | `backend/src/inspection.py` | 成批登记、采样版本、缺陷定位和复核前置条件 |
 | `backend/src/disposition.py` | 人工签核、领料并发保护、复测和关闭 |
+| `backend/src/calibration.py` | 勘误受理、范围圈定、原模型重算、待办与关批暂缓 |
 | `backend/src/model.py`、`queue.py`、`worker.py` | 可复现线性模型和异步任务 |
 | `backend/src/api.py`、`auth.py` | FastAPI 路由、JWT、权限、访问日志与请求编号 |
-| `frontend/src/pages/` | 批次台账、判级工作台、返工领料，登录及路由在 `app.js` |
+| `frontend/src/pages/` | 批次台账、判级工作台、返工领料、机台校准，登录及路由在 `app.js` |
 | `frontend/src/api.js`、`ui.js`、`labels.js` | API 客户端、共享业务组件、单位、岗位与状态映射 |
 
 `.env` 可设置 `COMPOSE_PROJECT_NAME`、`FRONTEND_PORT`、`BACKEND_PORT`、`DB_PORT`、`POSTGRES_PASSWORD`、`JWT_SECRET` 和 `SEED_DEMO`。Compose 使用 Nginx 1.27、Python 3.12 + FastAPI、scikit-learn 1.6.1、PostgreSQL 16 和 Redis 7。五个服务各有健康检查，Nginx 将 `/api/` 转发给 API。
 
-岗位、等级、机台、缺陷类型、包装面和缺陷复核态出现在 `migrations/001_workcell.sql`、`backend/src/schemas.py` 和 `frontend/src/labels.js`。批次、判级、返工状态出现在 SQL 约束、`inspection.py` / `disposition.py` / `queue.py` 和 `labels.js`。测量通道与单位由 `schemas.py`、SQL 测量列、`model.py`、`labels.js` 和 `ui.js` 共用。返工触发类型在 SQL、`disposition.py` 和 `pages/rework.js`，测量用途在 SQL、`inspection.py`、`disposition.py` 和 `pages/workbench.js`。复测上限从后端 API 返回。
+岗位、等级、机台、缺陷类型、包装面和缺陷复核态出现在 `migrations/001_workcell.sql`、`backend/src/schemas.py` 和 `frontend/src/labels.js`。批次、判级、返工状态出现在 SQL 约束、`inspection.py` / `disposition.py` / `queue.py` 和 `labels.js`。测量通道与单位由 `schemas.py`、SQL 测量列、`model.py`、`labels.js` 和 `ui.js` 共用。返工触发类型在 SQL、`disposition.py` 和 `pages/rework.js`，测量用途在 SQL、`inspection.py`、`disposition.py` 和 `pages/workbench.js`。复测上限从后端 API 返回。校准勘误与处置类型在 `migrations/002_calibration.sql`、`calibration.py`、`labels.js` 和 `pages/calibration.js`。
 
 本项目以 MIT License 提供，见 `LICENSE`。
 
@@ -80,3 +101,4 @@ docker compose exec -T backend python -m scripts.seed_demo
 登录后打开页面右下角的「业务核验」。可从实时业务台账筛选记录、导出所选结果，主管可对当前证据签认并填写说明。
 
 - **返工物料追溯** 沿返工单核对领用 SKU、库位和复测证据，用于班末交接和缺证补录。
+- **校准处置追踪** 对照勘误圈定批次的原模型、人工签核与重算等级，核对关批拦截和已关批追查进度。

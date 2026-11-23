@@ -113,13 +113,22 @@ def enqueue(db, lot_id, actor):
 
 
 def lot_list(db):
-    return db.execute('''SELECT l.*, m.sample, m.revision, d.model_grade, d.final_grade, r.state AS rework_state
+    return db.execute('''SELECT l.*, m.sample, m.revision, d.model_grade, d.final_grade, r.state AS rework_state,
+                         cr.recomputed_grade, cr.verdict AS calibration_verdict, cr.calibration_id,
+                         cr.state AS calibration_result_state, cr.failure AS calibration_failure,
+                         (SELECT count(*) FROM calibration_task t WHERE t.lot_id=l.id
+                          AND t.state='pending') AS calibration_tasks,
+                         (SELECT t.kind FROM calibration_task t WHERE t.lot_id=l.id
+                          AND t.state='pending' ORDER BY t.kind LIMIT 1) AS calibration_task_kind
                          FROM pack_lot l
                          LEFT JOIN LATERAL (SELECT * FROM visual_measure WHERE lot_id=l.id AND purpose='grading'
                                             ORDER BY revision DESC LIMIT 1) m ON true
                          LEFT JOIN LATERAL (SELECT * FROM grade_decision WHERE measure_id=m.id
                                             ORDER BY id DESC LIMIT 1) d ON true
-                         LEFT JOIN rework_issue r ON r.lot_id=l.id ORDER BY l.id DESC''').fetchall()
+                         LEFT JOIN rework_issue r ON r.lot_id=l.id
+                         LEFT JOIN LATERAL (SELECT * FROM calibration_result WHERE lot_id=l.id
+                                            ORDER BY computed_at DESC, id DESC LIMIT 1) cr ON true
+                         ORDER BY l.id DESC''').fetchall()
 
 
 def lot_detail(db, lot_id):

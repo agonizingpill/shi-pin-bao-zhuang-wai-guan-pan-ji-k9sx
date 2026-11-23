@@ -5,9 +5,10 @@ from pathlib import Path
 from psycopg import Error
 from redis.exceptions import RedisError
 
+from .calibration import calibration_next
 from .db import connect, migrate
 from .model import fitted
-from .queue import WAKE_QUEUE, grade_next, redis
+from .queue import CALIBRATION_QUEUE, WAKE_QUEUE, grade_next, redis
 
 
 def run():
@@ -19,17 +20,20 @@ def run():
         try:
             with connect() as db:
                 worked = grade_next(db)
+            with connect() as db:
+                recalibrated = calibration_next(db)
             heartbeat.touch()
         except Error:
             logging.exception('Database unavailable to grade worker')
             time.sleep(2)
             continue
-        if not worked:
-            try:
-                redis.blpop(WAKE_QUEUE, timeout=2)
-            except RedisError:
-                logging.warning('Redis wake unavailable, polling durable queue')
-                time.sleep(2)
+        if worked or recalibrated:
+            continue
+        try:
+            redis.blpop([WAKE_QUEUE, CALIBRATION_QUEUE], timeout=2)
+        except RedisError:
+            logging.warning('Redis wake unavailable, polling durable queues')
+            time.sleep(2)
 
 
 if __name__ == '__main__':

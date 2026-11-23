@@ -1,5 +1,17 @@
-import {DEFECTS, GRADES, ZONES} from '../labels.js';
+import {DEFECTS, GRADES, TASK_KINDS, VERDICTS, ZONES} from '../labels.js';
 import {auditList, channelInputs, channelName, empty, heading, lotLink, lotPicker, number, options, packLabel, readings, safe, sectionTitle, status, time} from '../ui.js';
+
+function calibrationPanel(lot, calibrations) {
+  if (!calibrations?.length) return '';
+  const pendingTasks = calibrations.flatMap(item => (item.tasks || []).filter(task => task.state === 'pending').map(task => ({...task, calibration: item})));
+  return `<section class="panel calibration-context">${sectionTitle('机台校准对照', '原判 / 重算')}
+    ${calibrations.map(item => `<article><div><b class="mono">CL-${String(item.calibration_id).padStart(4,'0')}</b> <small>${safe(item.machine)} · ${time(item.window_start)} → ${time(item.window_end)}</small>${status(item.state)}</div>
+      <div class="calibration-compare"><div><small>原模型</small><b class="grade-inline">${safe(item.prior_model_grade || '—')}</b></div><div><small>人工签核</small><b class="grade-inline">${safe(item.prior_final_grade || '—')}</b></div><div><small>重算等级</small><b class="grade-inline">${safe(item.recomputed_grade || '—')}</b></div><div><small>对照</small>${item.verdict ? `<span class="verdict ${safe(item.verdict)}">${safe(VERDICTS[item.verdict])}</span>` : item.result_state === 'error' ? `<small class="warn-text">${safe(item.failure)}</small>` : '<span class="muted">重算中</span>'}</div></div>
+      ${item.tasks?.length ? `<ul class="task-inline">${item.tasks.map(task => `<li>${safe(TASK_KINDS[task.kind] || task.kind)}${status(task.state)}</li>`).join('')}</ul>` : ''}
+      <a data-nav href="/calibrations?calibration=${item.calibration_id}">打开勘误 →</a></article>`).join('')}
+    ${pendingTasks.length ? `<p class="notice warn">本批次有 ${pendingTasks.length} 项校准处置待办，${lot.state === 'closed' ? '已挂追查' : '关批前须先行处置'}。</p>` : ''}
+  </section>`;
+}
 
 function gradePanel(data, decision, account) {
   const {lot} = data;
@@ -19,7 +31,7 @@ function gradePanel(data, decision, account) {
 
 export function workbenchPage(lots, data, account, zone) {
   if (!data) return `${heading('包装线 / 视觉质检', '判级工作台','从批次台账打开包装批次，开始视觉采样。')}${empty('找不到所选批次','请回到批次台账选择有效记录。')}<a data-nav href="/lots">返回包装批次 →</a>`;
-  const {lot, current, measures, missing, marks, decisions, rework, events} = data;
+  const {lot, current, measures, missing, marks, decisions, rework, events, calibrations} = data;
   const decision = decisions.find(item => item.measure_id === current?.id);
   const currentMarks = marks.filter(mark => mark.measure_id === current?.id);
   const canCapture = account.role === 'operator' && ['new','blocked','measured'].includes(lot.state);
@@ -33,7 +45,7 @@ export function workbenchPage(lots, data, account, zone) {
       ${current && missing.length ? `<p class="notice warn">缺失 ${missing.map(channelName).join('、')}。补采后保留原版本。</p>` : ''}
       <div class="button-line">${canCapture ? `<button data-dialog="capture">${current ? '归档补采版本' : '归档视觉测量'}</button>` : ''}${account.role === 'operator' && lot.state === 'measured' ? '<button class="primary" data-action="grade">提交判级</button>' : ''}</div>
       ${measures.length ? `<details class="model-proof"><summary>样本版本 · ${measures.length}</summary><ul class="samples">${measures.map(measure=> `<li>v${measure.revision} · ${safe(measure.sample)} <small>${measure.purpose === 'grading' ? '判级' : '返工复测'} · ${time(measure.created_at)}</small>${measure.id !== current?.id ? `<ul>${marks.filter(mark=>mark.measure_id===measure.id).map(mark=>`<li>${DEFECTS[mark.kind]} · ${ZONES[mark.zone]} ${mark.x_pct}, ${mark.y_pct} · ${safe(mark.note)} ${status(mark.state)}</li>`).join('')}</ul>` : ''}</li>`).join('')}</ul></details>` : ''}
-    </section>${gradePanel(data,decision,account)}</div>
+    </section>${gradePanel(data,decision,account)}${calibrationPanel(lot,calibrations)}</div>
     <aside class="panel trace">${sectionTitle('批次履历', '按时间倒序')}${auditList(events)}</aside></div>
     ${canCapture ? `<dialog id="capture"><div class="dialog-heading"><h2>归档视觉测量</h2><button data-dismiss="capture" aria-label="关闭">×</button></div><p>机台 ${safe(lot.machine)}。通道未读取时留空，批次进入补采。</p><form class="fields" data-action="measurements"><input type="hidden" name="machine" value="${safe(lot.machine)}"><label class="full">新样本号<input name="sample" maxlength="64" required placeholder="${safe(lot.code)}-S0${(current?.revision || 0)+1}"></label>${channelInputs(current || {})}<button class="primary full">保存测量版本</button></form></dialog>` : ''}
     ${canMark && account.role === 'operator' ? `<dialog id="mark"><div class="dialog-heading"><h2>标记缺陷位置</h2><button data-dismiss="mark" aria-label="关闭">×</button></div><form class="fields" data-action="marks"><label>缺陷类型<select name="kind">${options(DEFECTS)}</select></label><label>包装面<select name="zone">${options(ZONES,zone)}</select></label><label>横向位置 %<input type="number" min="0" max="100" name="x_pct" required></label><label>纵向位置 %<input type="number" min="0" max="100" name="y_pct" required></label><label class="full">现场观察<textarea name="note" required minlength="2" maxlength="300"></textarea></label><button class="primary full">保存缺陷标记</button></form></dialog>` : ''}`;

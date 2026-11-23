@@ -13,19 +13,30 @@ from .model import input_digest, predict
 logger = logging.getLogger(__name__)
 redis = Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'), socket_timeout=4)
 WAKE_QUEUE = 'pouch:grade-wake'
+CALIBRATION_QUEUE = 'pouch:calibration-wake'
+EVIDENCE_DIR = Path(os.getenv('MODEL_EVIDENCE_DIR', '/model-evidence'))
 
 
-def store_receipt(decision_id, digest, grade, evidence):
-    path = Path('/model-evidence')
-    record = {'decision_id': decision_id, 'input_sha256': digest, 'model_grade': grade, **evidence}
+def _write_receipt(name, record):
+    path = EVIDENCE_DIR
+    path.mkdir(parents=True, exist_ok=True)
     with NamedTemporaryFile(mode='w', dir=path, delete=False) as output:
         temporary = Path(output.name)
         try:
             json.dump(record, output, ensure_ascii=False, indent=2)
             output.flush()
-            temporary.replace(path / f'decision-{decision_id}.json')
+            temporary.replace(path / name)
         finally:
             temporary.unlink(missing_ok=True)
+
+
+def store_receipt(decision_id, digest, grade, evidence):
+    _write_receipt(f'decision-{decision_id}.json',
+                   {'decision_id': decision_id, 'input_sha256': digest, 'model_grade': grade, **evidence})
+
+
+def store_calibration_receipt(calibration_id, lot_id, record):
+    _write_receipt(f'calibration-{calibration_id}-lot-{lot_id}.json', record)
 
 
 def grade_next(db, lot_id=None):

@@ -1,7 +1,8 @@
+from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 
 class Role(StrEnum):
@@ -102,3 +103,61 @@ class Verification(MeasureInput):
 
 CHANNELS = ('wrinkle_pct', 'offset_mm', 'delta_e', 'seal_gap_mm', 'gloss_cv')
 VERIFICATION_LIMITS = dict(zip(CHANNELS, (1.0, 0.5, 2.0, 0.35, 4.0), strict=True))
+
+CHANNEL_BOUNDS = {'wrinkle_pct': (0, 100), 'offset_mm': (0, 20), 'delta_e': (0, 60),
+                  'seal_gap_mm': (0, 12), 'gloss_cv': (0, 100)}
+
+
+class ChannelCorrection(Payload):
+    """单个通道的修正量；按通道绝对量叠加到原读数上。"""
+
+    channel: str
+    delta: Annotated[float, Field(ge=-10_000, le=10_000, allow_inf_nan=False)]
+
+    @field_validator('channel')
+    @classmethod
+    def known_channel(cls, value):
+        if value not in CHANNELS:
+            raise ValueError('未知的测量通道')
+        return value
+
+
+class CalibrationInput(Payload):
+    machine: Machine
+    window_start: datetime
+    window_end: datetime
+    corrections: Annotated[list[ChannelCorrection], Field(min_length=0, max_length=len(CHANNELS))]
+    note: Note
+
+    @field_validator('corrections')
+    @classmethod
+    def unique_channels(cls, value):
+        channels = [item.channel for item in value]
+        if len(channels) != len(set(channels)):
+            raise ValueError('同一通道只能登记一次修正量')
+        return value
+
+    @field_validator('window_end')
+    @classmethod
+    def ordered_window(cls, value, info):
+        start = info.data.get('window_start')
+        if start is not None and value <= start:
+            raise ValueError('受影响时段的结束必须晚于开始')
+        return value
+
+
+class CalibrationAmend(Payload):
+    corrections: Annotated[list[ChannelCorrection], Field(min_length=0, max_length=len(CHANNELS))]
+    note: Note
+
+    @field_validator('corrections')
+    @classmethod
+    def unique_channels(cls, value):
+        channels = [item.channel for item in value]
+        if len(channels) != len(set(channels)):
+            raise ValueError('同一通道只能登记一次修正量')
+        return value
+
+
+class TaskClear(Payload):
+    note: Note

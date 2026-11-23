@@ -10,12 +10,12 @@ from psycopg import errors
 from redis.exceptions import RedisError
 
 from .operations_evidence import router as operations_evidence
-from . import disposition, inspection
+from . import calibration, disposition, inspection
 from .auth import identity, issue_token, password_matches, require
 from .db import connect
-from .queue import WAKE_QUEUE, redis
-from .schemas import (VERIFICATION_LIMITS, GradeReview, Login, LotInput, MarkInput, MarkReview,
-                      MeasureInput, Role, Verification)
+from .queue import CALIBRATION_QUEUE, WAKE_QUEUE, redis
+from .schemas import (VERIFICATION_LIMITS, CalibrationAmend, CalibrationInput, GradeReview, Login, LotInput,
+                      MarkInput, MarkReview, MeasureInput, Role, TaskClear, Verification)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('packaging')
@@ -97,7 +97,8 @@ def materials(_=Depends(identity)):
 def detail(lot_id: int, _=Depends(identity)):
     with connect() as db:
         db.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
-        return {**inspection.lot_detail(db, lot_id), 'verification_limits': VERIFICATION_LIMITS}
+        return {**inspection.lot_detail(db, lot_id), 'verification_limits': VERIFICATION_LIMITS,
+                'calibrations': calibration.lot_calibrations(db, lot_id)}
 
 
 @app.post('/lots', status_code=201)
@@ -160,3 +161,55 @@ def verify(lot_id: int, data: Verification, actor=Depends(supervisor)):
 def close(lot_id: int, actor=Depends(supervisor)):
     with connect() as db:
         return disposition.close_lot(db, lot_id, actor)
+
+
+@app.get('/calibrations')
+def calibrations(_=Depends(identity)):
+    with connect() as db:
+        return calibration.list_calibrations(db)
+
+
+@app.get('/calibrations/{calibration_id}')
+def calibration_detail(calibration_id: int, _=Depends(identity)):
+    with connect() as db:
+        db.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
+        return calibration.calibration_detail(db, calibration_id)
+
+
+@app.post('/calibrations', status_code=201)
+def register_calibration(data: CalibrationInput, actor=Depends(supervisor)):
+    with connect() as db:
+        row = calibration.accept_calibration(db, data, actor)
+    try:
+        redis.rpush(CALIBRATION_QUEUE, row['id'])
+    except RedisError:
+        logger.warning('Redis wake missed for calibration %s', row['id'])
+    return row
+
+
+@app.post('/calibrations/{calibration_id}/amend')
+def amend_calibration(calibration_id: int, data: CalibrationAmend, actor=Depends(supervisor)):
+    with connect() as db:
+        row = calibration.amend_calibration(db, calibration_id, data, actor)
+    try:
+        redis.rpush(CALIBRATION_QUEUE, row['id'])
+    except RedisError:
+        logger.warning('Redis wake missed for calibration %s', row['id'])
+    return row
+
+
+@app.post('/calibrations/{calibration_id}/retry')
+def retry_calibration(calibration_id: int, actor=Depends(supervisor)):
+    with connect() as db:
+        row = calibration.retry_calibration(db, calibration_id, actor)
+    try:
+        redis.rpush(CALIBRATION_QUEUE, row['id'])
+    except RedisError:
+        logger.warning('Redis wake missed for calibration %s', row['id'])
+    return row
+
+
+@app.post('/calibrations/{calibration_id}/tasks/{task_id}/clear')
+def clear_calibration_task(calibration_id: int, task_id: int, data: TaskClear, actor=Depends(supervisor)):
+    with connect() as db:
+        return calibration.clear_task(db, calibration_id, task_id, data, actor)

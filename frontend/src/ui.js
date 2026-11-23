@@ -1,4 +1,4 @@
-import {CHANNELS, EVENT_LABELS, STATES} from './labels.js';
+import {CHANNELS, EVENT_LABELS, STATES, VERDICTS} from './labels.js';
 
 const entities = {'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'};
 export const safe = value => String(value ?? '').replace(/[&<>"']/g, char => entities[char]);
@@ -40,8 +40,13 @@ export function auditList(events) {
 }
 
 function auditNote(event) {
-  const {sample, revision, missing, exceeds, reason, note, model, final, quantity, sku} = event.details;
+  const {sample, revision, missing, exceeds, reason, note, model, final, quantity, sku,
+    original_model_grade, recomputed_grade, verdict, kind} = event.details;
+  const taskLabel = event.action?.startsWith('calibration_task_') && kind
+    ? `待办 ${kind === 'close_hold' ? '关批拦截' : '已关批追查'}` : '';
   return [sample && `${sample}${revision ? ` · v${revision}` : ''}`, model && `模型 ${model} → 人工 ${final}`,
+    original_model_grade && `原模型 ${original_model_grade} → 重算 ${recomputed_grade || '—'}${verdict ? `（${VERDICTS[verdict] || verdict}）` : ''}`,
+    taskLabel,
     reason || note, quantity && `${sku} · ${number(quantity)} 件`, missing?.length && `缺失 ${missing.map(channelName).join('、')}`,
     exceeds?.length && `超限 ${exceeds.map(channelName).join('、')}`].filter(Boolean).map(line => `<p>${safe(line)}</p>`).join('');
 }

@@ -1,10 +1,14 @@
 from fastapi import HTTPException
 
+from . import calibration
 from .inspection import audit, insert_measure, latest_grade, latest_measure, lot_row, missing_channels, set_state
 from .schemas import VERIFICATION_LIMITS
 
 
 def sign_grade(db, lot_id, data, actor):
+    # 机台级勘误锁先于批次行锁，签核与勘误受理按受理顺序串行。
+    machine = lot_row(db, lot_id)['machine']
+    calibration.lock_machine(db, machine)
     lot = lot_row(db, lot_id, lock=True)
     if lot['state'] != 'review':
         raise HTTPException(409, '需要等待模型判级完成')
@@ -33,6 +37,8 @@ def sign_grade(db, lot_id, data, actor):
         audit(db, lot_id, actor, 'rework_requested', issue_id=row['id'], sku=row['sku'],
               quantity=row['required_units'], trigger=trigger)
     set_state(db, lot, 'rework' if rework else 'approved')
+    # 签核晚于勘误受理时，把该样本补入覆盖它的勘误并重新排队重算。
+    calibration.extend_scope_for_signed(db, lot, measure, actor)
     return signed
 
 
@@ -81,9 +87,15 @@ def verify_rework(db, lot_id, data, actor):
 
 
 def close_lot(db, lot_id, actor):
+    # 与勘误受理共用机台锁：先受理的勘误若尚未算完，关批在此暂缓。
+    machine = lot_row(db, lot_id)['machine']
+    calibration.lock_machine(db, machine)
     lot = lot_row(db, lot_id, lock=True)
     if lot['state'] != 'approved':
         raise HTTPException(409, '批次尚未获得放行，待领料或待复测的返工必须先闭环')
+    blocker = calibration.close_blockers(db, lot)
+    if blocker:
+        raise HTTPException(409, {'message': blocker['message'], **blocker})
     row = db.execute("UPDATE pack_lot SET state='closed',closed_at=now(),closed_by=%s WHERE id=%s RETURNING *",
                      (actor, lot_id)).fetchone()
     audit(db, lot_id, actor, 'lot_closed', code=lot['code'])

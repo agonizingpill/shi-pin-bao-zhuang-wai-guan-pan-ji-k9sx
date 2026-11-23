@@ -1,7 +1,10 @@
+import os
 from pathlib import Path
 
 import psycopg
 from psycopg.rows import dict_row
+
+MIGRATIONS = Path(os.getenv('MIGRATIONS_DIR', '/app/migrations'))
 
 
 def connect():
@@ -11,4 +14,5 @@ def connect():
 def migrate():
     with connect() as db:
         db.execute('SELECT pg_advisory_xact_lock(106500)')
-        db.execute(Path('/app/migrations/001_workcell.sql').read_text())
+        for script in sorted(MIGRATIONS.glob('*.sql')):
+            db.execute(script.read_text())
